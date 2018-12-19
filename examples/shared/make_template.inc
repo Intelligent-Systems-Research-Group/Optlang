@@ -1,18 +1,21 @@
 CXX = clang++
 LINK = clang++
-NVCC = /usr/local/cuda/bin/nvcc
+NVCC = /usr/local/cuda/bin/nvcca
 SRC ?= src
 CUDAHOME += /usr/local/cuda
-TERRAHOME ?= ../../../terra
-TERRA ?= ../../../terra/release/terra
+#/release
+TERRAHOME ?= /home/dl/projects/Optlang/terra/release
+TERRA ?= /home/dl/projects/Optlang/terra/release
+#TERRAHOME ?= /home/dl/projects/Optlang/terra_working
+#TERRA ?= /home/dl/projects/Optlang/terra_working
 
 ifeq ($(UNAME), Linux)
   S4 = 64
 endif
-
-FLAGS += -O3 -g -std=c++11 -I$(SRC) -I$(SRC)/cutil/inc -I../../API/release/include -I$(TERRAHOME)/include -I$(CUDAHOME)/include -I../external/mLib/include -I../external -I../external/OpenMesh/include
-NVCCFLAGS += -arch sm_30 $(FLAGS)
-LFLAGS += -std=c++11 -L../../API/release/lib -L$(CUDAHOME)/lib$(S4) -lcudart -L$(TERRAHOME)/lib -lterra -ldl
+# -g -O3 -DNDEBUG
+FLAGS += -O3 -DNDEBUG -march=native -std=c++11 -I$(SRC) -I$(SRC)/cutil/inc -I../../API/release/include -I$(TERRAHOME)/include -I$(CUDAHOME)/include -I../external/mLib/include -I../external -I../external/OpenMesh/include
+NVCCFLAGS += -arch sm_61 $(FLAGS)
+LFLAGS += -std=c++11 -L../../API/release/lib -L$(CUDAHOME)/lib$(S4) -lcudart -L$(TERRAHOME)/lib -lterra -ldl -ltinfo -lz -lembree3
 UNAME := $(shell uname)
 
 ifeq ($(UNAME), Darwin)

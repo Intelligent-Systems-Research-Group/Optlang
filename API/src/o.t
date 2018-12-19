@@ -128,7 +128,10 @@ struct opt.Plan(S.Object) {
     setsolverparameter : {&opaque,rawstring,&opaque} -> {} -- plan.data,name,param
     free : {&opaque} -> {} -- plan.data
     step : {&opaque,&&opaque} -> int
-    cost : {&opaque} -> double
+    cost : {&opaque, &&opaque} -> double
+    halfstep : {&opaque,&&opaque} -> int
+    update : {&opaque,&&opaque} -> int
+    decreaseAccepted : {&opaque,&&opaque} -> int
     data : &opaque
 }
 
@@ -823,13 +826,20 @@ function ProblemSpec:Graph(name, idx, ...)
     local mm = GraphType.metamethods
     mm.idx = idx -- the index into the graph size table
     mm.elements = terralib.newlist()
+    
+    local file = io.open("metanames.csv","a")
+    
     for i = 1, select("#",...),3 do
         local name,dims,didx = select(i,...) --TODO: we don't bother to track the dimensions of these things now
         local ispace = toispace(dims)
         local Index = ispace:indextype()
         GraphType.entries:insert {name, &Index}
         mm.elements:insert( { name = name, type = Index, idx = assert(tonumber(didx))} )
+        file:write(tostring(name))
+        file:write(",")
     end
+    file:write("\n")
+    file:close()
     self:newparameter(GraphParam(GraphType,name,idx))
 end
 
@@ -935,7 +945,7 @@ function ad.Index(d) return IndexValue(d,0):asvar() end
 
 function ad.ProblemSpec()
     local ps = ProblemSpecAD()
-    ps.P,ps.nametoimage,ps.precomputed,ps.extraarguments,ps.excludeexps = opt.ProblemSpec(), {}, List(), List(), List()
+    ps.P,ps.nametoimage,ps.precomputed,ps.assign,ps.extraarguments,ps.excludeexps = opt.ProblemSpec(), {}, List(), List(), List(), List()
     if ps.P:UsesLambda() then
         ps.trust_region_radius = ps:Param("trust_region_radius",opt_float,-1)
         ps.radius_decrease_factor = ps:Param("radius_decrease_factor",opt_float,-1)
@@ -1010,6 +1020,28 @@ local function bboxforexpression(ispace,exp)
     return BoundsAccess(bmin,bmax)
 end
 
+function ProblemSpecAD:Assign(name,dims,exp,graph,idx)
+    if ad.ExpVector:isclassof(exp) then
+        local imgs = terralib.newlist()
+        for i,e in ipairs(exp:expressions()) do
+            imgs:insert(self:Assign(name.."_"..tostring(i-1),dims,e,idx))
+        end
+        return ImageVector(imgs)
+    end
+    print(dims)
+    local ispace = toispace(dims)
+    print(ispace)
+    --local im = self:ImageTemporary(name,ispace)
+    self.P:Image(name,opt_float,ispace,"alloc",true)
+    local r = Image(name,self.P:ImageType(opt_float, ispace),true,A.StateLocation)
+    self.nametoimage[name] = r
+    r.expression = exp
+    r.idx = idx
+    r.graphname = graph.name
+    self.assign:insert(r)
+    return r
+end
+
 function ProblemSpecAD:ComputedImage(name,dims,exp)
     if ad.ExpVector:isclassof(exp) then
         local imgs = terralib.newlist()
@@ -1019,10 +1051,16 @@ function ProblemSpecAD:ComputedImage(name,dims,exp)
         return ImageVector(imgs)
     end
     exp = assert(ad.toexp(exp),"expected a math expression")
+    
     local unknowns = terralib.newlist()
     local seen = {}
+    local isGraph = true
+    local im
     exp:visit(function(a)
         if ImageAccess:isclassof(a) and a.image.location == A.UnknownLocation then
+            if not isGraph then
+                isGraph = not Offset:isclassof(a.index)
+            end
             assert(Offset:isclassof(a.index),"NYI - support for precomputed graphs")
             if not seen[a] then
                 seen[a] = true
@@ -1030,18 +1068,37 @@ function ProblemSpecAD:ComputedImage(name,dims,exp)
             end
         end
     end)
-    local ispace = toispace(dims)
-    local im = self:ImageTemporary(name,ispace)
-    local gradients = exp:gradient(unknowns:map(function(x) return ad.v[x] end))
-    im.gradientimages = terralib.newlist()
-    for i,g in ipairs(gradients) do
-        local u = unknowns[i]
-        local gim = self:ImageTemporary(name.."_d_"..tostring(u),ispace)
-        im.gradientimages:insert(GradientImage(u,g,gim))
+    assert(isGraph)
+    if not isGraph then
+        local ispace = toispace(dims)
+        im = self:ImageTemporary(name,ispace)
+        local gradients = exp:gradient(unknowns:map(function(x) return ad.v[x] end))
+        im.gradientimages = terralib.newlist()
+        for i,g in ipairs(gradients) do
+            local u = unknowns[i]
+            local gim = self:ImageTemporary(name.."_d_"..tostring(u),ispace)
+            im.gradientimages:insert(GradientImage(u,g,gim))
+        end
+        im.expression = exp
+        im.bbox = bboxforexpression(ispace,exp)
+        self.precomputed:insert(im)
+    else
+        local ispace = toispace(dims)
+        im = self:ImageTemporary(name,ispace)
+        --[[
+        local gradients = exp:gradient(unknowns:map(function(x) return ad.v[x] end))
+        im.gradientimages = terralib.newlist()
+        for i,g in ipairs(gradients) do
+            local u = unknowns[i]
+            local gim = self:ImageTemporary(name.."_d_"..tostring(u),ispace)
+            im.gradientimages:insert(GradientImage(u,g,gim))
+        end
+        ]]--
+        im.expression = exp
+        local bmin,bmax = ispace:ZeroOffset(),ispace:ZeroOffset()
+        im.bbox = BoundsAccess(bmin,bmax)
+        self.precomputed:insert(im)
     end
-    im.expression = exp
-    im.bbox = bboxforexpression(ispace,exp)
-    self.precomputed:insert(im)
     return im
 end
 
@@ -1699,6 +1756,9 @@ local function createfunction(problemspec,name,Index,arguments,results,scatters)
         end
     end
     local function graphref(ge)
+        --print("Graph ref: " .. ge.graph.name.." "..ge.element.." ")
+        --print(idx)
+        --print("Ref Finished")
         return `P.[ge.graph.name].[ge.element][idx]
     end
     local function createexp(ir)        
@@ -1940,6 +2000,8 @@ local function classifyexpression(exp) -- what index space, or graph is this thi
             seenunknown[u] = true
         end
     end
+    --print("classify expression")
+    --print(exp)
     exp:visit(function(a)
         if ImageAccess:isclassof(a) then -- assume image X is unknown
             if a.image.location == A.UnknownLocation then
@@ -1951,6 +2013,9 @@ local function classifyexpression(exp) -- what index space, or graph is this thi
                 end
             end
             local aclass = Offset:isclassof(a.index) and A.CenteredFunction(a.image.type.ispace) or A.GraphFunction(a.index.graph.name)
+            --print("exp")
+            --print(aclass)
+            --print(classification)
             assert(nil == classification or aclass == classification, "residual contains image reads from multiple domains")
             classification = aclass
         end
@@ -2028,7 +2093,7 @@ local function toenergyspecs(Rs)
 end
 
 --given that the residual at (0,0) uses the variables in 'unknownsupport',
---what is the set of residuals will use variable X(0,0).
+--what is the set of residuals will use variable X(0,0).1905
 --this amounts to taking each variable in unknown support and asking which residual is it
 --that makes that variable X(0,0)
 local function residualsincludingX00(unknownsupport,unknown,channel)
@@ -2163,6 +2228,80 @@ local function createjtjgraph(PS,ES)
     return A.FunctionSpec(ES.kind,"applyJTJ", List {"P", "Ap_X"}, List { result }, scatters, ES)
 end
 
+local function createjgraph(PS,ES)
+    local P,Ap_X = PS:UnknownArgument(1),PS:UnknownArgument(2)
+
+    local result = ad.toexp(0)
+    local scatters = List() 
+    local scattermap = {}
+    local function addscatter(u,exp)
+        local s = scattermap[u]
+        if not s then
+            s =  Scatter(Ap_X[u.image.name],u.index,u.channel,ad.toexp(0),"add")
+            scattermap[u] = s
+            scatters:insert(s)
+        end
+        s.expression = s.expression + exp
+    end
+    for i,term in ipairs(ES.residuals) do
+        local F,unknownsupport = term.expression,term.unknowns
+        local unknownvars = unknownsupport:map(function(x) return ad.v[x] end)
+        local partials = F:gradient(unknownvars)
+        local Jp = ad.toexp(0)
+        for i,partial in ipairs(partials) do
+            local u = unknownsupport[i]
+            assert(GraphElement:isclassof(u.index))
+            Jp = Jp + partial*P[u.image.name](u.index,u.channel)
+        end
+        --[[
+        for i,partial in ipairs(partials) do
+            local u = unknownsupport[i]
+            local jtjp = 1.0 * Jp*partial
+            result = result + P[u.image.name](u.index,u.channel)*jtjp
+            addscatter(u,jtjp)
+        end
+        ]]--
+    end
+
+    return A.FunctionSpec(ES.kind,"applyJ", List {"P", "Ap_X"}, List { result }, scatters, ES)
+end
+
+local function createjtgraph(PS,ES)
+    local P,Ap_X = PS:UnknownArgument(1),PS:UnknownArgument(2)
+
+    local result = ad.toexp(0)
+    local scatters = List() 
+    local scattermap = {}
+    local function addscatter(u,exp)
+        local s = scattermap[u]
+        if not s then
+            s =  Scatter(Ap_X[u.image.name],u.index,u.channel,ad.toexp(0),"add")
+            scattermap[u] = s
+            scatters:insert(s)
+        end
+        s.expression = s.expression + exp
+    end
+    for i,term in ipairs(ES.residuals) do
+        local F,unknownsupport = term.expression,term.unknowns
+        local unknownvars = unknownsupport:map(function(x) return ad.v[x] end)
+        local partials = F:gradient(unknownvars)
+        local Jp = ad.toexp(0)
+        for i,partial in ipairs(partials) do
+            local u = unknownsupport[i]
+            assert(GraphElement:isclassof(u.index))
+            Jp = Jp + partial*P[u.image.name](u.index,u.channel)
+        end
+        for i,partial in ipairs(partials) do
+            local u = unknownsupport[i]
+            local jtjp = 1.0 * Jp*partial
+            result = result + P[u.image.name](u.index,u.channel)*jtjp
+            addscatter(u,jtjp)
+        end
+    end
+
+    return A.FunctionSpec(ES.kind,"applyJT", List {"P", "Ap_X"}, List { result }, scatters, ES)
+end
+
 
 local function createjtfcentered(PS,ES)
    local UnknownType = PS.P:UnknownType()
@@ -2261,7 +2400,6 @@ local function createmodelcostgraph(PS,ES)
     result = ad.polysimplify(0.5*result)
     return A.FunctionSpec(ES.kind, "modelcost", List { "Delta" }, List{ result }, EMPTY,ES)
 end
-
 
 local function createjtfgraph(PS,ES)
     local R,Pre = PS:UnknownArgument(1),PS:UnknownArgument(2)
@@ -2422,6 +2560,42 @@ local function createcost(ES)
     return A.FunctionSpec(ES.kind,"cost", EMPTY, List{exp}, EMPTY,ES) 
 end
 
+local function createinitassign(self,assignedimages)
+    local ispaces,image_map = MapAndGroupBy(assignedimages,function(im) return im.type.ispace,im end)
+    local assigns = List()
+    local fake = 0
+    local name = nil
+    for _,ispace in ipairs(ispaces) do
+        local scatters = List()
+        --local zoff = ispace:ZeroOffset()
+          
+        for _,im in ipairs(image_map[ispace]) do
+            local zoff = im.idx 
+            fake = zoff
+            name = im.graphname
+            --local expression = ad.polysimplify(im.expression)
+            local expression = im.expression
+            local specs = toenergyspecs(expression)
+            print ("assign: " .. im.name .. " ")
+            print(zoff)           
+            scatters:insert(Scatter(im, zoff, 0, im.expression, "set")) --im.idx
+            --[[
+            for _,gim in ipairs(im.gradientimages) do
+                local gradientexpression = ad.polysimplify(gim.expression)
+                if not ad.Const:isclassof(gradientexpression) then
+                    scatters:insert(Scatter(gim.image, zoff, 0, gradientexpression, "set"))
+                end
+            end
+            ]]--
+        end
+        local funname = name--fake:__tostring()
+        print("Function name "..funname)
+        local pc = A.FunctionSpec(A.GraphFunction(funname),"initassign", EMPTY, EMPTY, scatters)
+        assigns:insert(pc)
+    end
+    return assigns
+end
+
 function createprecomputed(self,precomputedimages)
 
     local ispaces,image_map = MapAndGroupBy(precomputedimages,function(im) return im.type.ispace,im end)
@@ -2460,12 +2634,15 @@ local function extractresidualterms(...)
     end
     return exp
 end
+
 function ProblemSpecAD:Cost(...)
     local terms = extractresidualterms(...)
     local functionspecs = List()
     local energyspecs = toenergyspecs(terms)
+    print("Number of Energyspecs: "..#energyspecs)
     for _,energyspec in ipairs(energyspecs) do
-        functionspecs:insert(createcost(energyspec))          
+        print("Energyspec detected")
+        functionspecs:insert(createcost(energyspec))      
         if energyspec.kind.kind == "CenteredFunction" then
             functionspecs:insert(createjtjcentered(self,energyspec))
             functionspecs:insert(createjtfcentered(self,energyspec))
@@ -2477,6 +2654,8 @@ function ProblemSpecAD:Cost(...)
             end
         else
             functionspecs:insert(createjtjgraph(self,energyspec))
+            --functionspecs:insert(createjgraph(self,energyspec))
+            --functionspecs:insert(createjtgraph(self,energyspec))
             functionspecs:insert(createjtfgraph(self,energyspec))
             functionspecs:insert(createdumpjgraph(self,energyspec))
             
@@ -2486,7 +2665,10 @@ function ProblemSpecAD:Cost(...)
             end
         end
     end
+    print("precomputed images")
     functionspecs:insertall(createprecomputed(self,self.precomputed))
+    
+    --functionspecs:insertall(createinitassign(self, self.assign))    
     for i,exclude in ipairs(self.excludeexps) do
         local class = classifyexpression(exclude)
         functionspecs:insert(A.FunctionSpec(class, "exclude", EMPTY,List{exclude}, EMPTY))
@@ -2538,7 +2720,7 @@ function ad.sampledimage(image,imagedx,imagedy)
     return SampledImage(op)
 end
 
-for i = 2,12 do
+for i = 2,256 do
     opt["float"..tostring(i)] = util.Vector(float,i)
     opt["double"..tostring(i)] = util.Vector(double,i)
     if opt_float == float then
@@ -2587,11 +2769,22 @@ terra opt.ProblemSolve(plan : &opt.Plan, params : &&opaque)
    opt.ProblemInit(plan, params)
    while opt.ProblemStep(plan, params) ~= 0 do end
 end
-terra opt.ProblemCurrentCost(plan : &opt.Plan) : double
-    return plan.cost(plan.data)
+terra opt.ProblemCurrentCost(plan : &opt.Plan, params : &&opaque) : double
+    return plan.cost(plan.data, params)
+end
+terra opt.ProblemHalfstep(plan : &opt.Plan, params : &&opaque) : int
+    return plan.halfstep(plan.data, params)
+end
+terra opt.ProblemUpdate(plan : &opt.Plan, params : &&opaque) : int
+    return plan.update(plan.data, params)
+end
+
+terra opt.ProblemDecreaseAccepted(plan : &opt.Plan, params : &&opaque) : int
+    return plan.decreaseAccepted(plan.data, params)
 end
 
 terra opt.SetSolverParameter(plan : &opt.Plan, name : rawstring, value : &opaque) 
+    logSolver("Setting some stuff \n")
     return plan.setsolverparameter(plan.data, name, value)
 end
 

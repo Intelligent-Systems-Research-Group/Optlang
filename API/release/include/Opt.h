@@ -68,4 +68,9 @@ int Opt_ProblemStep(Opt_State* state, Opt_Plan* plan, void** problemparams);
 // Return the result of the cost function evaluated on the current unknowns
 // If the solver is initialized to not use double precision, the return value
 // will be upconverted from a float before being returned
-double Opt_ProblemCurrentCost(Opt_State* state, Opt_Plan* plan);
+double Opt_ProblemCurrentCost(Opt_State* state, Opt_Plan* plan, void** problemparams);
+
+int Opt_ProblemHalfstep(Opt_State* state, Opt_Plan* plan, void** problemparams);
+int Opt_ProblemUpdate(Opt_State* state, Opt_Plan* plan, void** problemparams);
+int Opt_ProblemDecreaseAccepted(Opt_State* state, Opt_Plan* plan, void** problemparams);
+

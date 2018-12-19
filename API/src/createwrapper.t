@@ -75,6 +75,7 @@ local apimatch = ("%s_(.*)"):format(libraryname)
 for k,v in pairs(Header) do
     local name = k:match(apimatch)
     if name and terralib.isfunction(v) and name ~= "NewState" then
+		print("Creating function "..name)
         local type = v:gettype()
         apifunctions[name] = {unpack(type.parameters,2)} -> type.returntype
     end
@@ -112,6 +113,7 @@ for name,type in pairs(apifunctions) do
 end
 
 local terra doerror(L : &C.lua_State)
+	C.printf("Error Occurred in createwrapper\n")
     C.printf("%s\n",C.luaL_checklstring(L,-1,nil))
     C.lua_getfield(L,LUA_GLOBALSINDEX,"os")
     C.lua_getfield(L,-1,"exit")
@@ -122,14 +124,19 @@ end
 
 local sourcepath = absolutepath(sourcedirectory).."/?.t"
 local terra NewState(params : Opt_InitializationParameters) : &LibraryState
-    var S = [&LibraryState](C.malloc(sizeof(LibraryState)))
     var L = C.luaL_newstate();
+    if L == nil then 
+		C.printf("luaL_newstate failed\n")
+		return doerror(L) 
+	end
+	C.printf("Trying to malloc %d bytes\n",sizeof(LibraryState))
+    var S = [&LibraryState](C.malloc(sizeof(LibraryState)))
     S.L = L
-    if L == nil then return doerror(L) end
     C.luaL_openlibs(L)
     var o  = C.terra_Options { verbose = 0, debug = 1, usemcjit = 1 }
     
     if C.terra_initwithoptions(L,&o) ~= 0 then
+		C.printf("terra_initwithoptions failed\n")
         doerror(L)
     end
     setupsigsegv(L)
@@ -192,7 +199,10 @@ local terra NewState(params : Opt_InitializationParameters) : &LibraryState
     
     C.lua_getfield(L,LUA_GLOBALSINDEX,"require")
     C.lua_pushstring(L,main)
-    if C.lua_pcall(L,1,1,0) ~= 0 then return doerror(L) end
+    if C.lua_pcall(L,1,1,0) ~= 0 then 
+		C.printf("lua_pcall failed\n")
+		return doerror(L) 
+	end
     
     escape
         for k,type in pairs(apifunctions) do

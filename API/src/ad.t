@@ -5,7 +5,7 @@ require("precision")
 local use_simplify = true
 local use_condition_factoring = true
 local use_polysimplify = true
-local use_backward_ad = false
+local use_backward_ad = true
 local List = terralib.newlist
 
 A:Extern("TerraType",terralib.types.istype)

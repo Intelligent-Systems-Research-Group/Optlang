@@ -2,6 +2,7 @@ local S = require("std")
 require("precision")
 local util = {}
 local verbosePTX = _opt_verbosity > 2
+local verboseKernels = _opt_verbosity > 1
 
 util.C = terralib.includecstring [[
 #include <stdio.h>
@@ -39,8 +40,10 @@ function table.keys(tab)
     return result
 end
 
-local cuda_compute_version = 30
+local cuda_compute_version = 50 --30
 local libdevice = terralib.cudahome..string.format("/nvvm/libdevice/libdevice.compute_%d.10.bc",cuda_compute_version)
+--local libdevice = terralib.cudahome.."/nvvm/libdevice/libdevice.10.bc"
+
 
 local terra toYesNo(pred : int32)
     if pred ~= 0 then return "Yes" else return  "No" end
@@ -126,6 +129,9 @@ local computeC = deviceMajorComputeCapability()
 if computeC >= 6 then
     pascalOrBetterGPU = true
 end
+
+--pascalOrBetterGPU = false
+
 if _opt_verbosity > 1 then
     printCudaDeviceProperties()
 end
@@ -864,13 +870,17 @@ function util.makeGPUFunctions(problemSpec, PlanData, delegate, names)
             local ks = delegate.GraphFunctions(graphname,problemfunction.functionmap)
             for name,func in pairs(ks) do            
                 kernelFunctions[getkname(name,problemfunction.typ)] = { kernel = func , annotations = { {"maxntidx", BLOCK_DIMS[1][1]}, {"minctasm",1} } }
+                if verboseKernels then
+                    print("Name: "..getkname(name,problemfunction.typ))
+                    print(func)
+                end
             end
         end
     end
     if verbosePTX then
         print("Compiling kernels!")
     end
-    local kernels = terralib.cudacompile(kernelFunctions, verbosePTX)
+    local kernels = terralib.cudacompile(kernelFunctions, verbosePTX,61) --, "30"
     
     -- step 2: generate wrapper functions around each named thing
     local grouplaunchers = {}
@@ -899,6 +909,7 @@ function util.makeGPUFunctions(problemSpec, PlanData, delegate, names)
             fn:gettype()
         end
         grouplaunchers[name] = fn 
+        print(grouplaunchers[name])
     end
     return grouplaunchers
 end

@@ -1,4 +1,4 @@
-﻿extern "C" {
+extern "C" {
 #include "Opt.h"
 }
 #include <cstdlib>
@@ -27,10 +27,16 @@ void solve(int dataCount, int* startNodes, int* endNodes, OPT_FLOAT* params, OPT
     // load the Opt DSL file containing the cost description
     Opt_Problem* problem = Opt_ProblemDefine(state, name.c_str(), "gaussNewtonGPU");
     // describe the dimensions of the instance of the problem
-    unsigned int dims[] = { dataCount, 1 };
+    unsigned int dims[] = { (unsigned int)dataCount, 1 };
     Opt_Plan* plan = Opt_ProblemPlan(state, problem, dims);
     // run the solver
-    void* problem_data[] = { params, data, &dataCount, endNodes, startNodes };
+    void* problem_data[] = { params, data, &dataCount, endNodes, startNodes
+        , &dataCount, endNodes, startNodes 
+    };
+    //Opt_ProblemSolve(state, plan, problem_data);
+    Opt_ProblemInit(state, plan, problem_data);
+    double cost = Opt_ProblemCurrentCost(state, plan, problem_data);
+    std::cout << "COST: " << cost << std::endl;
     Opt_ProblemSolve(state, plan, problem_data);
     Opt_PlanFree(state, plan);
     Opt_ProblemDelete(state, problem);
@@ -39,7 +45,7 @@ void solve(int dataCount, int* startNodes, int* endNodes, OPT_FLOAT* params, OPT
 
 int main(){
 
-    const int dim = 512;
+    const int dim = 1;
     OPT_FLOAT2 generatorParams = { 100.0, 102.0 };
     std::vector<OPT_FLOAT2> dataPoints(dim);
     OPT_FLOAT a = generatorParams.x;
@@ -49,7 +55,7 @@ int main(){
     std::uniform_real_distribution<> dis(-50.0, 50.0);
     for (int i = 0; i < dataPoints.size(); ++i) {
         OPT_FLOAT x = float(i)*2.0*3.141592653589 / dim;
-        OPT_FLOAT y = (a*cos(b*x) + b*sin(a*x));
+        OPT_FLOAT y = (a*cos(x) + a*sin(x));
         //y = a*x + b;
         // Add in noise
         //y += dis(gen);
@@ -58,7 +64,7 @@ int main(){
 
     }
     
-    OPT_FLOAT2 unknownInit = { 99.7f, 101.6f };
+    OPT_FLOAT2 unknownInit = { 3, 3 };
 
     OPT_FLOAT *d_data, *d_unknown;
     cudaMalloc(&d_data, dim*sizeof(OPT_FLOAT2));

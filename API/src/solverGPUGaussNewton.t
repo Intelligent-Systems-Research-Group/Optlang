@@ -21,14 +21,15 @@ local initialization_parameters = {
     use_fused_jtj = false,
     guardedInvertType = GuardedInvertType.CERES,
     jacobiScaling = JacobiScalingType.ONCE_PER_SOLVE
+    --jacobiScaling = JacobiScalingType.NONE
 }
 
 local solver_parameter_defaults = {
-    residual_reset_period = 10,
+    residual_reset_period = 10, --10,
     min_relative_decrease = 1e-3,
-    min_trust_region_radius = 1e-32,
+    min_trust_region_radius = 1e-32, -- -32
     max_trust_region_radius = 1e16,
-    q_tolerance = 0.0001,
+    q_tolerance = 0.0001,  --0.0001,
     function_tolerance = 0.000001,
     trust_region_radius = 1e4,
     radius_decrease_factor = 2.0,
@@ -183,12 +184,15 @@ return function(problemSpec)
         g : TUnknownType		--gradient of F(x): g = -2J'F -> num vars
 
         prevX : TUnknownType -- Place to copy unknowns to before speculatively updating. Avoids hassle when (X + delta) - delta != X 
+        
 
         scanAlphaNumerator : &opt_float
         scanAlphaDenominator : &opt_float
         scanBetaNumerator : &opt_float
 
         modelCost : &opt_float    -- modelCost = L(delta) where L(h) = F' F + 2 h' J' F + h' J' J h
+        model_cost_change : opt_float        
+
         q : &opt_float -- Q value for zeta calculation (see CERES)
 
         timer : Timer
@@ -756,6 +760,15 @@ return function(problemSpec)
             end
         end
 
+        if fmap.initassign then
+            terra kernels.initassign(pd : PlanData)
+                var tIdx = 0 
+                if util.getValidGraphElement(pd,[graphname],&tIdx) then
+                    fmap.initassign(tIdx,pd.parameters)
+                end
+            end
+        end
+
 	    return kernels
 	end
 	
@@ -775,6 +788,7 @@ return function(problemSpec)
                                                                         "computeCost",
                                                                         "PCGSaveSSq",
                                                                         "precompute",
+                                                                        "initassign",
                                                                         "computeAdelta",
                                                                         "computeAdelta_Graph",
                                                                         "PCGInit1_Graph",
@@ -1092,7 +1106,7 @@ return function(problemSpec)
 				
 				if [problemSpec:UsesLambda()] then
 	                Q1 = fetchQ(pd)
-	                var zeta = [opt_float](lIter+1)*(Q1 - Q0) / Q1 
+	                var zeta = [opt_float](lIter/1+1)*(Q1 - Q0) / Q1 
                     --logSolver("%d: Q0(%g) Q1(%g), zeta(%g)\n", lIter, Q0, Q1, zeta)
 	                if zeta < q_tolerance then
                         logSolver("zeta=%.18g, breaking at iteration: %d\n", zeta, (lIter+1))
@@ -1132,7 +1146,7 @@ return function(problemSpec)
                                 return 0
                             end
 
-                            var step_quality = relative_decrease
+                       var step_quality = relative_decrease
                             var min_factor = 1.0/3.0
                             var tmp_factor = 1.0 - util.cpuMath.pow(2.0 * step_quality - 1.0, 3.0)
                             pd.parameters.trust_region_radius = pd.parameters.trust_region_radius / util.cpuMath.fmax(min_factor, tmp_factor)
@@ -1176,9 +1190,275 @@ return function(problemSpec)
         end
     end
 
-    local terra cost(data_ : &opaque) : double
+    local terra cost(data_ : &opaque, params_ : &&opaque) : double
         var pd = [&PlanData](data_)
-        return [double](pd.prevCost)
+        [util.initParameters(`pd.parameters,problemSpec, params_,false)]
+        gpu.precompute(pd)
+        --gpu.initassign(pd)
+        var cCost = computeCost(pd)
+        return [double](cCost)
+    end
+
+    local terra halfstep(data_ : &opaque, params_ : &&opaque)
+        var pd = [&PlanData](data_)
+        var residual_reset_period : int         = pd.solverparameters.residual_reset_period
+        var min_relative_decrease : opt_float   = pd.solverparameters.min_relative_decrease
+        var min_trust_region_radius : opt_float = pd.solverparameters.min_trust_region_radius
+        var max_trust_region_radius : opt_float = pd.solverparameters.max_trust_region_radius
+        var q_tolerance : opt_float             = pd.solverparameters.q_tolerance
+        var function_tolerance : opt_float      = pd.solverparameters.function_tolerance
+        var Q0 : opt_float
+        var Q1 : opt_float
+		[util.initParameters(`pd.parameters,problemSpec, params_,false)]
+
+        gpu.precompute(pd)
+        pd.prevCost = computeCost(pd)
+
+        
+        logSolver("Cost before step %.18g \n", pd.prevCost)
+
+
+		if pd.solverparameters.nIter < pd.solverparameters.nIterations then
+			C.cudaMemset(pd.scanAlphaNumerator, 0, sizeof(opt_float))	--scan in PCGInit1 requires reset
+			C.cudaMemset(pd.scanAlphaDenominator, 0, sizeof(opt_float))	--scan in PCGInit1 requires reset
+			C.cudaMemset(pd.scanBetaNumerator, 0, sizeof(opt_float))	--scan in PCGInit1 requires reset
+
+			gpu.PCGInit1(pd)
+			if isGraph then
+				gpu.PCGInit1_Graph(pd)	
+				gpu.PCGInit1_Finish(pd)	
+			end
+
+            escape 
+                if problemSpec:UsesLambda() then
+                    emit quote
+                        C.cudaMemset(pd.scanAlphaNumerator, 0, sizeof(opt_float))
+                        C.cudaMemset(pd.q, 0, sizeof(opt_float))
+                        if [initialization_parameters.jacobiScaling == JacobiScalingType.ONCE_PER_SOLVE] and pd.solverparameters.nIter == 0 then
+                            gpu.PCGSaveSSq(pd)
+                        end
+                        gpu.PCGComputeCtC(pd)
+                        gpu.PCGComputeCtC_Graph(pd)
+                        -- This also computes Q
+                        gpu.PCGFinalizeDiagonal(pd)
+                        Q0 = fetchQ(pd)
+                    end
+                end
+            end
+            logDebugCudaOptFloat("init scanAlphaNumerator", pd.scanAlphaNumerator)
+            cusparseOuter(pd)
+            for lIter = 0, pd.solverparameters.lIterations do				
+
+                C.cudaMemset(pd.scanAlphaDenominator, 0, sizeof(opt_float))
+                C.cudaMemset(pd.q, 0, sizeof(opt_float))
+
+                if not initialization_parameters.use_cusparse then
+    				gpu.PCGStep1(pd)
+    				if isGraph then
+    					gpu.PCGStep1_Graph(pd)
+    				end
+                end
+
+				-- only does anything if initialization_parameters.use_cusparse is true
+                cusparseInner(pd)
+
+                if multistep_alphaDenominator_compute then
+                    gpu.PCGStep1_Finish(pd)
+                end
+				logDebugCudaOptFloat("scanAlphaDenominator", pd.scanAlphaDenominator)
+				C.cudaMemset(pd.scanBetaNumerator, 0, sizeof(opt_float))
+				
+				if [problemSpec:UsesLambda()] and ((lIter + 1) % residual_reset_period) == 0 then
+                    gpu.PCGStep2_1stHalf(pd)
+                    gpu.computeAdelta(pd)
+                    if isGraph then
+                        gpu.computeAdelta_Graph(pd)
+                    end
+                    gpu.PCGStep2_2ndHalf(pd)
+                else
+                    gpu.PCGStep2(pd)
+                end
+                logDebugCudaOptFloat("scanBetaNumerator", pd.scanBetaNumerator)
+                gpu.PCGStep3(pd)
+
+				-- save new rDotz for next iteration
+				C.cudaMemcpy(pd.scanAlphaNumerator, pd.scanBetaNumerator, sizeof(opt_float), C.cudaMemcpyDeviceToDevice)	
+				
+				if [problemSpec:UsesLambda()] then
+	                Q1 = fetchQ(pd)
+	                --var zeta = [opt_float](lIter+1)*(Q1 - Q0) / Q1 
+	                var zeta =  [opt_float](pd.solverparameters.nIter+1) *(Q1 - Q0) / Q1 
+                    --logSolver("%d: Q0(%g) Q1(%g), zeta(%g)\n", lIter, Q0, Q1, zeta)
+	                if zeta < q_tolerance then
+                        logSolver("zeta=%.18g, breaking at iteration: %d\n", zeta, (lIter+1))
+	                    break
+	                end
+	                Q0 = Q1
+				end
+			end
+			
+
+            var model_cost_change : opt_float
+            var model_cost : opt_float
+
+            escape if problemSpec:UsesLambda() then
+                emit quote 
+                    model_cost_change = computeModelCostChange(pd)
+                    model_cost = computeModelCost(pd)
+                    logSolver("halfstep prev_cost=%.18g \n", pd.prevCost)
+                    logSolver("halfstep model_cost=%.18g \n", model_cost)
+                    
+                    pd.model_cost_change = model_cost_change
+                    gpu.savePreviousUnknowns(pd)
+                end
+            end end
+
+			gpu.PCGLinearUpdate(pd)    
+			gpu.precompute(pd)
+			
+            return 1
+        else
+            cleanup(pd)
+            return 0
+        end
+    end
+
+    local terra decreaseAccepted(data_ : &opaque, params_ : &&opaque)
+        var pd = [&PlanData](data_)
+        var residual_reset_period : int         = pd.solverparameters.residual_reset_period
+        var min_relative_decrease : opt_float   = pd.solverparameters.min_relative_decrease
+        var min_trust_region_radius : opt_float = pd.solverparameters.min_trust_region_radius
+        var max_trust_region_radius : opt_float = pd.solverparameters.max_trust_region_radius
+        var q_tolerance : opt_float             = pd.solverparameters.q_tolerance
+        var function_tolerance : opt_float      = pd.solverparameters.function_tolerance
+        [util.initParameters(`pd.parameters,problemSpec, params_,false)]
+
+        gpu.precompute(pd)
+        var newCost = computeCost(pd)
+
+        logSolver("Cost after update %.18g \n", newCost)
+
+        var model_cost_change : opt_float
+
+        escape if problemSpec:UsesLambda() then
+            emit quote 
+                --model_cost_change = computeModelCostChange(pd)
+                --gpu.savePreviousUnknowns(pd)
+                model_cost_change = pd.model_cost_change
+            end
+        end end
+
+		escape 
+            if problemSpec:UsesLambda() then
+                emit quote
+					logSolver("decreaseAccepted prevCost=%.18g \n", pd.prevCost)
+					logSolver("decreaseAccepted newCost=%.18g \n", newCost)
+					logSolver("decreaseAccepted model_cost_change=%.18g \n", model_cost_change)
+                    var cost_change = pd.prevCost - newCost
+                    logSolver("decreaseAccepted old trust_region_radius=%.18g \n", pd.parameters.trust_region_radius)
+                    logSolver("decreaseAcceptedcost_change=%.18g \n", cost_change)
+                    -- See CERES's TrustRegionStepEvaluator::StepAccepted() for a more complicated version of this
+                    var relative_decrease = cost_change / model_cost_change
+                    if cost_change >= 0 and relative_decrease > min_relative_decrease then
+                        return 1
+                    else 
+                       return 0
+                    end
+                end
+            else
+                emit quote
+                    return 1
+
+                end
+            end 
+        end
+
+        --[[ 
+        To match CERES we would check for termination:
+        iteration_summary_.gradient_max_norm <= options_.gradient_tolerance
+        ]]
+
+        pd.solverparameters.nIter = pd.solverparameters.nIter + 1
+        return 1
+        
+    end
+
+    local terra update(data_ : &opaque, params_ : &&opaque)        
+        var pd = [&PlanData](data_)
+        var residual_reset_period : int         = pd.solverparameters.residual_reset_period
+        var min_relative_decrease : opt_float   = pd.solverparameters.min_relative_decrease
+        var min_trust_region_radius : opt_float = pd.solverparameters.min_trust_region_radius
+        var max_trust_region_radius : opt_float = pd.solverparameters.max_trust_region_radius
+        var q_tolerance : opt_float             = pd.solverparameters.q_tolerance
+        var function_tolerance : opt_float      = pd.solverparameters.function_tolerance
+        [util.initParameters(`pd.parameters,problemSpec, params_,false)]
+
+        gpu.precompute(pd)
+        var newCost = computeCost(pd)
+
+        var model_cost_change : opt_float
+
+        escape if problemSpec:UsesLambda() then
+            emit quote 
+                --model_cost_change = computeModelCostChange(pd)
+                --gpu.savePreviousUnknowns(pd)
+                model_cost_change = pd.model_cost_change
+            end
+        end end
+
+		escape 
+            if problemSpec:UsesLambda() then
+                emit quote
+                    var cost_change = pd.prevCost - newCost
+                    -- See CERES's TrustRegionStepEvaluator::StepAccepted() for a more complicated version of this
+                    var relative_decrease = cost_change / model_cost_change
+                    if cost_change >= 0 and relative_decrease > min_relative_decrease then
+                        var absolute_function_tolerance = pd.prevCost * function_tolerance
+                        if cost_change <= absolute_function_tolerance then
+                            logSolver("\nFunction tolerance reached, exiting\n")
+                            cleanup(pd)
+                            return 0
+                        end
+
+                        var step_quality = relative_decrease
+                        var min_factor = 1.0/3.0
+                        var tmp_factor = 1.0 - util.cpuMath.pow(2.0 * step_quality - 1.0, 3.0)
+                        pd.parameters.trust_region_radius = pd.parameters.trust_region_radius / util.cpuMath.fmax(min_factor, tmp_factor)
+                        pd.parameters.trust_region_radius = util.cpuMath.fmin(pd.parameters.trust_region_radius, max_trust_region_radius)
+                        pd.parameters.radius_decrease_factor = 2.0
+
+                        pd.prevCost = newCost
+                    else 
+                        gpu.revertUpdate(pd)
+
+                        pd.parameters.trust_region_radius = pd.parameters.trust_region_radius / pd.parameters.radius_decrease_factor
+                        logSolver(" trust_region_radius=%f \n", pd.parameters.trust_region_radius)
+                        pd.parameters.radius_decrease_factor = 2.0 * pd.parameters.radius_decrease_factor
+                        if pd.parameters.trust_region_radius <= min_trust_region_radius then
+                            logSolver("\nTrust_region_radius is less than the min, exiting\n")
+                            cleanup(pd)
+                            return 0
+                        end
+                        logSolver("REVERT\n")
+                        gpu.precompute(pd)
+                    end
+                end
+            else
+                emit quote
+                    logSolver("cost: %f -> %f\n", pd.prevCost, newCost)
+                    pd.prevCost = newCost 
+
+                end
+            end 
+        end
+
+        --[[ 
+        To match CERES we would check for termination:
+        iteration_summary_.gradient_max_norm <= options_.gradient_tolerance
+        ]]
+
+        pd.solverparameters.nIter = pd.solverparameters.nIter + 1
+        return 1
     end
 
     local terra initializeSolverParameters(params : &SolverParameters)
@@ -1203,6 +1483,7 @@ return function(problemSpec)
     end
 
     local terra setSolverParameter(data_ : &opaque, name : rawstring, value : &opaque) 
+        logSolver("Try setting some parameters %s\n", name)
         var pd = [&PlanData](data_)
         var success = false
         escape
@@ -1254,7 +1535,7 @@ return function(problemSpec)
 	local terra makePlan() : &opt.Plan
 		var pd = PlanData.alloc()
 		pd.plan.data = pd
-		pd.plan.init,pd.plan.step,pd.plan.cost,pd.plan.setsolverparameter,pd.plan.free = init,step,cost,setSolverParameter,free
+		pd.plan.init,pd.plan.step,pd.plan.halfstep,pd.plan.update,pd.plan.decreaseAccepted,pd.plan.cost,pd.plan.setsolverparameter,pd.plan.free = init,step,halfstep,update,decreaseAccepted,cost,setSolverParameter,free
 		pd.delta:initGPU()
 		pd.r:initGPU()
         pd.b:initGPU()

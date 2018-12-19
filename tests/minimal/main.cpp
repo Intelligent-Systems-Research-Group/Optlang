@@ -7,10 +7,10 @@
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "../shared/stb_image_write.h"
 
-void solveLaplacian(int width, int height, float* unknown, float* target) {
+void solveLaplacian(unsigned int width, unsigned int height, float* unknown, float* target) {
     Opt_InitializationParameters param = {};
     param.doublePrecision = 0;
-    param.verbosityLevel = 1;
+    param.verbosityLevel = 2;
     param.collectPerKernelTimingInfo = 1;
     //param.threadsPerBlock = 512;
     Opt_State* state = Opt_NewState(param);
@@ -52,7 +52,8 @@ int main(){
     cudaMalloc(&target, fSize);
     cudaMalloc(&unknown, fSize);
     cudaMemcpy(target, scratch, fSize, cudaMemcpyHostToDevice);
-    cudaMemcpy(unknown, target, fSize, cudaMemcpyDeviceToDevice);
+    //cudaMemcpy(unknown, target, fSize, cudaMemcpyDeviceToDevice);
+    cudaMemset(unknown,0,fSize);
     delete[] scratch;
 
     solveLaplacian(dim, dim, unknown, target);

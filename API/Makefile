@@ -1,7 +1,8 @@
 .PHONY:	all clean purge release
 
 TERRAHOME ?= ../../terra/
-TERRA ?= ../../terra/bin/terra
+TERRA ?= ../../terra/terra 
+#bin/
 
 all: release/lib/libOpt.a release/lib/libOptDev.a
 

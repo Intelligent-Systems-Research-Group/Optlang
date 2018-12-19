@@ -1,9 +1,42 @@
-N,U = Dim("N",0), Dim("U",1)
-funcParams =   Unknown("funcParams", opt_float2, {U}, 0)
-data =         Image("data", opt_float2, {N}, 1)
-local G = Graph("G", 2, "d", {N}, 3, "p", {U}, 4)
-UsePreconditioner(true)
+cfg = 0
+function inc()
+   cfg = cfg+1
+   return cfg-1
+end
 
-x,y = data(G.d)(0),data(G.d)(1)
-a,b = funcParams(G.p)(0),funcParams(G.p)(1)
-Energy(y - (a*cos(b*x) + b*sin(a*x))) 
+
+--N,U = Dim("N",0), Dim("U",1)
+N = Dim("N",0)
+funcParams =   Unknown("funcParams", opt_float2, {N}, inc())
+data =         Image("datas", opt_float2, {N}, inc())
+as = 0
+
+function term(name)
+    local G = Graph(name, inc(), "d", {N}, inc(), "p", {N}, inc())
+    UsePreconditioner(true)
+    --local x = data(G.d)(0)
+    --local y = data(G.d)(1)
+    local a = funcParams(G.p)(0)
+    local b = funcParams(G.p)(1)
+    --as = Assign("A", {N}, y) --, 
+    --as = ComputedGraph("A",{N},2*y+1)(0)
+    --Energy(as(G.p)) --as(G.p)
+    Energy(a*as(G.p))
+end
+
+
+function sub(name)
+    local G = Graph(name, inc(), "d", {N}, inc(), "p", {N}, inc())
+    UsePreconditioner(true)
+    local x = data(G.d)(0)
+    --local y = data(G.d)(1)
+    local a = funcParams(G.p)(0)
+    local b = funcParams(G.p)(1)
+    as = Assign("A", {N}, b, G, G.p)
+    Energy(x) 
+end
+
+
+sub("G3")
+term("G1")
+
