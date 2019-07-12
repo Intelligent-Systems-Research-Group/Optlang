@@ -877,11 +877,15 @@ function util.makeGPUFunctions(problemSpec, PlanData, delegate, names)
             end
         end
     end
-    if verbosePTX then
-        print("Compiling kernels!")
-    end
+    --if verbosePTX then
+    print("Try Compiling kernels!")
+    --end
     local kernels = terralib.cudacompile(kernelFunctions, verbosePTX,61) --, "30"
+    --if verbosePTX then
+    print("Done compiling kernels!")
+    --end
     
+    print("Try making GPU launchers")
     -- step 2: generate wrapper functions around each named thing
     local grouplaunchers = {}
     for _,name in ipairs(names) do
@@ -911,6 +915,7 @@ function util.makeGPUFunctions(problemSpec, PlanData, delegate, names)
         grouplaunchers[name] = fn 
         print(grouplaunchers[name])
     end
+    print("Done making GPU launchers")
     return grouplaunchers
 end
 

@@ -835,8 +835,11 @@ return function(problemSpec)
             var model_cost = computeModelCost(pd)
             logSolver(" cost=%f \n",cost)
             logSolver(" model_cost=%f \n",model_cost)
+            C.printf(" cost=%f \n",cost)
+            C.printf(" model_cost=%f \n",model_cost)
             var model_cost_change = cost - model_cost
             logSolver(" model_cost_change=%f \n",model_cost_change)
+            C.printf(" model_cost_change=%f \n",model_cost_change)
             return model_cost_change
         end
     end
@@ -1291,6 +1294,7 @@ return function(problemSpec)
                     --logSolver("%d: Q0(%g) Q1(%g), zeta(%g)\n", lIter, Q0, Q1, zeta)
 	                if zeta < q_tolerance then
                         logSolver("zeta=%.18g, breaking at iteration: %d\n", zeta, (lIter+1))
+                        C.printf("zeta=%.18g, breaking at iteration: %d\n", zeta, (lIter+1))
 	                    break
 	                end
 	                Q0 = Q1
@@ -1432,7 +1436,8 @@ return function(problemSpec)
                         gpu.revertUpdate(pd)
 
                         pd.parameters.trust_region_radius = pd.parameters.trust_region_radius / pd.parameters.radius_decrease_factor
-                        logSolver(" trust_region_radius=%f \n", pd.parameters.trust_region_radius)
+                        --logSolver(" trust_region_radius=%f \n", pd.parameters.trust_region_radius)
+                        C.printf(" trust_region_radius=%f \n", pd.parameters.trust_region_radius)
                         pd.parameters.radius_decrease_factor = 2.0 * pd.parameters.radius_decrease_factor
                         if pd.parameters.trust_region_radius <= min_trust_region_radius then
                             logSolver("\nTrust_region_radius is less than the min, exiting\n")

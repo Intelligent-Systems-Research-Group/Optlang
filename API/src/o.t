@@ -120,7 +120,9 @@ local problems = {}
 
 local function compilePlan(problemSpec, kind)
     assert(kind == "gaussNewtonGPU" or kind == "LMGPU" ,"expected solver kind to be gaussNewtonGPU or LMGPU")
-    return gaussNewtonGPU(problemSpec)
+    local ret = gaussNewtonGPU(problemSpec)
+    print("compilePlan done")
+    return ret
 end
 
 struct opt.Plan(S.Object) {

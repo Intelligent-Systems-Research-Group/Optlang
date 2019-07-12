@@ -41,7 +41,9 @@ else
     
     local terra sigsegv(sig : int, info : &C.siginfo_t, uap : &opaque)
         C.signal(sig,C.SIG_DFL_fn())  --reset signal to default, just in case traceback itself crashes
+        C.printf("I GOT A SEGFAULT!")
         terratraceback(uap)
+        C.printf("Terra traceback executed!")
         C.raise(sig)
     end
     terra setupsigsegv(L : &C.lua_State)
