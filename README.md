@@ -1,3 +1,5 @@
+This is a modified version of Optlang. We added support for manifold optimization.
+
 Opt
 ---
 
