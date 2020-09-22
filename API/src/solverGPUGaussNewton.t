@@ -20,8 +20,8 @@ local initialization_parameters = {
     use_cusparse = false,
     use_fused_jtj = false,
     guardedInvertType = GuardedInvertType.CERES,
-    jacobiScaling = JacobiScalingType.ONCE_PER_SOLVE
-    --jacobiScaling = JacobiScalingType.NONE
+    --jacobiScaling = JacobiScalingType.ONCE_PER_SOLVE
+    jacobiScaling = JacobiScalingType.NONE
 }
 
 local solver_parameter_defaults = {
@@ -1363,6 +1363,7 @@ return function(problemSpec)
                     logSolver("decreaseAcceptedcost_change=%.18g \n", cost_change)
                     -- See CERES's TrustRegionStepEvaluator::StepAccepted() for a more complicated version of this
                     var relative_decrease = cost_change / model_cost_change
+					logSolver("decreaseAccepted relative_decrease=%.18g \n", relative_decrease)
                     if cost_change >= 0 and relative_decrease > min_relative_decrease then
                         return 1
                     else 

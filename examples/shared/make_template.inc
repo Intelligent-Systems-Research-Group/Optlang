@@ -1,6 +1,6 @@
 CXX = clang++
 LINK = clang++
-NVCC = /usr/local/cuda/bin/nvcca
+NVCC = /usr/local/cuda/bin/nvcc
 SRC ?= src
 CUDAHOME += /usr/local/cuda
 #/release
